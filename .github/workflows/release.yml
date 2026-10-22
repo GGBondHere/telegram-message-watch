@@ -80,28 +80,28 @@ jobs:
           done
           [[ -s THIRD_PARTY_NOTICES.md ]]
       - name: Read version changelog
+        shell: bash
         run: |
-          version=${GITHUB_REF_NAME#v}
-          awk -v wanted="$version" '
-            BEGIN { heading = "## " wanted }
+          set -euo pipefail
+          awk -v version="${GITHUB_REF_NAME#v}" '
             { sub(/\r$/, "") }
             /^## / {
-              active = ($0 == heading || index($0, heading " - ") == 1)
-              if (active) count++
+              matched = ($2 == "[" version "]")
+              if (matched) count++
+              active = (matched && NF == 4 && $3 == "-")
               next
             }
-            active { print }
+            active {
+              print
+              if ($0 ~ /^[[:space:]]*[^#[:space:]]/) content = 1
+            }
             END {
-              if (count != 1) {
-                print "CHANGELOG.md 必须包含且仅包含一节版本 " wanted > "/dev/stderr"
+              if (count != 1 || !content) {
+                print "CHANGELOG.md 中版本 " version " 必须唯一、标题格式正确且正文非空" > "/dev/stderr"
                 exit 1
               }
             }
           ' CHANGELOG.md > release-notes.md
-          if ! grep -q '^[^#[:space:]]' release-notes.md; then
-            echo "CHANGELOG.md 中版本 $version 的更新说明为空" >&2
-            exit 1
-          fi
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}

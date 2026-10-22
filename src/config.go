@@ -17,7 +17,7 @@ import (
 	"golang.org/x/text/cases"
 )
 
-const version = "1.0.0"
+const version = "1.0.1"
 const project = "telegram-message-watch"
 
 var repository = "GGBondHere/telegram-message-watch"

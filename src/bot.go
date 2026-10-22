@@ -491,9 +491,37 @@ func (m *botMenu) confirmation(group WatchGroup, input *menuInput, page int) (me
 	return confirmInput(group, input, page), nil
 }
 
+// ForceReply stays attached to its message after the in-memory input ends.
+// Retire only our recorded prompt; a cleanup failure must not undo an action.
+func (m *botMenu) retirePrompt(ctx context.Context, id int64) {
+	if id <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), menuReplyTimeout)
+	defer cancel()
+	err := m.bot.api(ctx, "deleteMessage", map[string]any{
+		"chat_id": m.owner, "message_id": id,
+	}, nil)
+	var apiErr *botError
+	if err != nil && !(errors.As(err, &apiErr) && apiErr.code == 400) {
+		logf("清理已结束的 Bot 输入提示失败：%v", err)
+	}
+}
+
 func (m *botMenu) poll(ctx context.Context, offset int64, initial []botUpdate) error {
+	defer func() {
+		if m.input != nil && !m.input.confirming {
+			m.retirePrompt(ctx, m.input.promptID)
+		}
+	}()
 	updates := initial
 	for {
+		if input := m.input; input != nil && time.Now().After(input.expires) {
+			m.input = nil
+			if !input.confirming {
+				m.retirePrompt(ctx, input.promptID)
+			}
+		}
 		for _, update := range updates {
 			if update.ID < offset {
 				continue
@@ -533,10 +561,17 @@ func (m *botMenu) poll(ctx context.Context, offset int64, initial []botUpdate) e
 }
 
 func (m *botMenu) handle(ctx context.Context, update botUpdate) error {
+	var promptID int64
+	if m.input != nil && !m.input.confirming {
+		promptID = m.input.promptID
+	}
 	m.committed = false
 	actionCtx, cancel := context.WithTimeout(ctx, menuActionTimeout)
 	defer cancel()
 	err := m.handleAction(actionCtx, update)
+	if promptID > 0 && (m.input == nil || m.input.promptID != promptID || m.input.confirming) {
+		m.retirePrompt(ctx, promptID)
+	}
 	if err == nil || ctx.Err() != nil {
 		return err
 	}
