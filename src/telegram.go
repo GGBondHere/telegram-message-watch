@@ -266,6 +266,27 @@ func (c *TGClient) ResolveSender(ctx context.Context, value string) (Sender, err
 	return Sender{ID: id, Label: c.peerInfo(id).title}, nil
 }
 
+func telegramMessageText(message *tg.Message) string {
+	markup, ok := message.ReplyMarkup.(*tg.ReplyInlineMarkup)
+	if !ok || markup == nil {
+		return message.Message
+	}
+	var text strings.Builder
+	text.WriteString(message.Message)
+	for _, row := range markup.Rows {
+		for _, button := range row.Buttons {
+			if button.Text == "" {
+				continue
+			}
+			if text.Len() > 0 {
+				text.WriteByte('\n')
+			}
+			text.WriteString(button.Text)
+		}
+	}
+	return text.String()
+}
+
 func telegramMatch(group WatchGroup, text string, senderID int64) []string {
 	if !group.Enabled {
 		return nil
@@ -346,13 +367,14 @@ func (c *TGClient) enqueueMessage(store *Store, ownerID int64, started int64, en
 	case *tg.PeerChat:
 		link = fmt.Sprintf("tg://openmessage?chat_id=%d&message_id=%d", p.ChatID, m.ID)
 	}
-	summary := m.Message
+	text := telegramMessageText(m)
+	summary := text
 	if summary == "" {
 		summary = "（媒体消息，无文字说明）"
 	}
 	now := time.Now()
 	_, err := store.Enqueue(Notice{ChatID: chatID, MessageID: int64(m.ID), OwnerID: ownerID, Link: link, Due: now, Created: now}, func(group WatchGroup) string {
-		reasons := telegramMatch(group, m.Message, senderID)
+		reasons := telegramMatch(group, text, senderID)
 		if len(reasons) == 0 {
 			return ""
 		}

@@ -254,6 +254,72 @@ func TestConcurrentMultiMatchDeduplication(t *testing.T) {
 	}
 }
 
+func TestInlineButtonKeywordMatching(t *testing.T) {
+	buttons := &tg.ReplyInlineMarkup{Rows: []tg.KeyboardInlineButtonRow{
+		{Buttons: []tg.KeyboardInlineButton{{Text: "一键参与抽奖", Type: &tg.InlineButtonTypeCallback{Data: []byte("callback-only")}}}},
+		{},
+		{Buttons: []tg.KeyboardInlineButton{{Text: "SALE", Type: &tg.InlineButtonTypeURL{URL: "https://example.com/url-only"}}, {Text: ""}}},
+	}}
+	sender := Sender{ID: 11, Label: "小王"}
+	cases := []struct {
+		name    string
+		text    string
+		markup  tg.ReplyMarkupClass
+		rules   []Rule
+		reasons []string
+		summary string
+	}{
+		{"media_buttons", "", buttons,
+			[]Rule{{Keyword: "抽奖"}, {Keyword: "sale"}, {Sender: sender, Keyword: "抽奖"}, {Sender: Sender{ID: 22}, Keyword: "抽奖"}, {Keyword: "callback-only"}, {Keyword: "url-only"}},
+			[]string{"消息包含「抽奖」", "消息包含「sale」", "小王 发出的含「抽奖」的消息"}, "一键参与抽奖\nSALE"},
+		{"caption_and_buttons", "补货", buttons,
+			[]Rule{{Keyword: "补货"}, {Sender: sender, Keyword: "SALE"}},
+			[]string{"消息包含「补货」", "小王 发出的含「SALE」的消息"}, "补货\n一键参与抽奖\nSALE"},
+		{"wrong_sender", "", buttons, []Rule{{Sender: Sender{ID: 22}, Keyword: "抽奖"}}, nil, ""},
+		{"hidden_button_data", "", buttons, []Rule{{Keyword: "callback-only"}, {Keyword: "url-only"}}, nil, ""},
+		{"separate_fields", "抽", &tg.ReplyInlineMarkup{Rows: []tg.KeyboardInlineButtonRow{{Buttons: []tg.KeyboardInlineButton{{Text: "奖"}}}}},
+			[]Rule{{Keyword: "抽奖"}}, nil, ""},
+		{"plain_message", "SALE", nil, []Rule{{Keyword: "sale"}}, []string{"消息包含「sale」"}, "SALE"},
+		{"media_without_text", "", nil, []Rule{{Sender: sender}}, []string{"小王 的全部消息"}, "（媒体消息，无文字说明）"},
+		{"empty_buttons", "", &tg.ReplyInlineMarkup{}, []Rule{{Keyword: "抽奖"}}, nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			chat := -(channelIDOffset + 123)
+			addTestRules(t, store, chat, tc.rules...)
+			client := &TGClient{peers: map[int64]telegramPeerInfo{}}
+			message := &tg.Message{ID: 7, Date: int(time.Now().Unix()), PeerID: &tg.PeerChannel{ChannelID: 123}, FromID: &tg.PeerUser{UserID: 11}, Message: tc.text, ReplyMarkup: tc.markup}
+			for range 2 {
+				if err := client.enqueueMessage(store, 99, 0, tg.Entities{}, message); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var count int
+			if err := store.db.QueryRow("SELECT count(*) FROM notices").Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if len(tc.reasons) == 0 {
+				if count != 0 {
+					t.Fatalf("unexpected notice count: %d", count)
+				}
+				return
+			}
+			if count != 1 {
+				t.Fatalf("expected one notice after repeated delivery, got %d", count)
+			}
+			notice, err := store.NextNotice(time.Now())
+			if err != nil || notice == nil {
+				t.Fatalf("missing notice: %v", err)
+			}
+			want := "\n\n命中：" + formatNoticeReasons(tc.reasons) + "\n\n" + tc.summary
+			if !strings.HasSuffix(notice.Body, want) {
+				t.Fatalf("notice body %q does not end with %q", notice.Body, want)
+			}
+		})
+	}
+}
+
 func TestEnqueueUsesCurrentRulesAndPause(t *testing.T) {
 	store, _ := testStore(t)
 	group := addTestRules(t, store, -123, Rule{Keyword: "sale"})
